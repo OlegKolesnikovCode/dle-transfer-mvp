@@ -1,497 +1,915 @@
 "use client";
 
-import { useMemo, useState } from "react";
-
-type JsonValue = unknown;
+import { useState } from "react";
+import type { CSSProperties } from "react";
 
 type TransferForm = {
-  requestIdentity: string;
   sourceAccountId: string;
   destinationAccountId: string;
   assetId: string;
   amount: string;
 };
 
+type ApiResult = {
+  httpStatus: number;
+  body: unknown;
+};
+
+type AccountBalance = {
+  amount: bigint;
+  raw: unknown;
+};
+
+type StepStatus = "idle" | "running" | "pass" | "fail";
+
+type VerificationStep = {
+  id: string;
+  title: string;
+  sourceRefs: string[];
+  status: StepStatus;
+  expected: string;
+  observed: string;
+};
+
 const DEFAULT_FORM: TransferForm = {
-  requestIdentity: "req_demo_" + Date.now().toString(),
   sourceAccountId: "acct_source_demo",
   destinationAccountId: "acct_destination_demo",
   assetId: "asset_usd_atomic",
   amount: "100"
 };
 
-const cardStyle: React.CSSProperties = {
-  border: "1px solid #d0d7de",
-  borderRadius: "12px",
-  padding: "18px",
-  background: "#ffffff",
-  boxShadow: "0 1px 3px rgba(0,0,0,0.06)"
-};
+const INITIAL_STEPS: VerificationStep[] = [
+  {
+    id: "valid-transfer",
+    title: "1. Valid Transfer executes",
+    sourceRefs: ["ARCH-001", "ARCH-002", "ARCH-003", "FSM-005"],
+    status: "idle",
+    expected: "POST /api/transfers returns EXECUTED for a new Request.",
+    observed: "Not run."
+  },
+  {
+    id: "balance-delta",
+    title: "2. Balance delta is correct",
+    sourceRefs: ["INV-005", "INV-006", "ARCH-005"],
+    status: "idle",
+    expected: "Source decreases by amount; destination increases by amount.",
+    observed: "Not run."
+  },
+  {
+    id: "ledger-trace",
+    title: "3. LedgerEntry trace is complete",
+    sourceRefs: ["INV-001", "INV-010", "ARCH-006"],
+    status: "idle",
+    expected: "Exactly two LedgerEntries: one DEBIT and one CREDIT for same Transfer and Asset.",
+    observed: "Not run."
+  },
+  {
+    id: "duplicate-request",
+    title: "4. Duplicate Request does not re-execute",
+    sourceRefs: ["INV-007", "FAIL-007", "ARCH-002"],
+    status: "idle",
+    expected: "Same requestIdentity returns duplicate outcome and balances remain unchanged.",
+    observed: "Not run."
+  },
+  {
+    id: "invalid-rejection",
+    title: "5. Invalid Transfer is rejected without mutation",
+    sourceRefs: ["INV-005", "FAIL-005", "ARCH-005"],
+    status: "idle",
+    expected: "Insufficient funds returns FAIL-005 or FAILED outcome and balances remain unchanged.",
+    observed: "Not run."
+  }
+];
 
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "10px 12px",
-  border: "1px solid #d0d7de",
-  borderRadius: "8px",
-  fontSize: "14px"
-};
-
-const buttonStyle: React.CSSProperties = {
-  padding: "10px 14px",
-  border: "1px solid #1f6feb",
-  borderRadius: "8px",
-  background: "#1f6feb",
-  color: "#ffffff",
-  fontWeight: 600,
-  cursor: "pointer"
-};
-
-const secondaryButtonStyle: React.CSSProperties = {
-  ...buttonStyle,
-  background: "#ffffff",
-  color: "#1f6feb"
-};
-
-function pretty(value: JsonValue): string {
-  return JSON.stringify(value, null, 2);
+function cloneInitialSteps(): VerificationStep[] {
+  return INITIAL_STEPS.map((step) => ({ ...step }));
 }
 
-async function readJsonResponse(response: Response): Promise<JsonValue> {
-  const text = await response.text();
-
-  if (!text) {
+function asRecord(value: unknown): Record<string, any> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
+  return value as Record<string, any>;
+}
+
+function pretty(value: unknown): string {
+  return JSON.stringify(value, null, 2);
+}
+
+function statusLabel(status: StepStatus): string {
+  if (status === "pass") return "PASS";
+  if (status === "fail") return "FAIL";
+  if (status === "running") return "RUNNING";
+  return "PENDING";
+}
+
+function statusStyle(status: StepStatus): CSSProperties {
+  const base: CSSProperties = {
+    display: "inline-block",
+    minWidth: "78px",
+    padding: "4px 8px",
+    borderRadius: "999px",
+    fontSize: "12px",
+    fontWeight: 800,
+    textAlign: "center"
+  };
+
+  if (status === "pass") {
+    return { ...base, background: "#dafbe1", color: "#116329" };
   }
+
+  if (status === "fail") {
+    return { ...base, background: "#ffebe9", color: "#cf222e" };
+  }
+
+  if (status === "running") {
+    return { ...base, background: "#fff8c5", color: "#9a6700" };
+  }
+
+  return { ...base, background: "#eaeef2", color: "#57606a" };
+}
+
+async function fetchJson(path: string, init?: RequestInit): Promise<ApiResult> {
+  const response = await fetch(path, init);
+  const text = await response.text();
+
+  let body: unknown = null;
+
+  if (text.length > 0) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
+
+  return {
+    httpStatus: response.status,
+    body
+  };
+}
+
+async function getAccountBalance(
+  accountId: string,
+  assetId: string
+): Promise<AccountBalance> {
+  const apiResult = await fetchJson(`/api/accounts/${accountId}/balances`);
+  const body = asRecord(apiResult.body);
+  const result = asRecord(body?.result);
+  const balances = result?.balances;
+
+  if (!Array.isArray(balances)) {
+    throw new Error(`Balance response for ${accountId} did not include balances array.`);
+  }
+
+  const balance = balances.find((item) => item?.assetId === assetId);
+
+  if (!balance || typeof balance.amount !== "string") {
+    throw new Error(`No Balance found for account ${accountId} and asset ${assetId}.`);
+  }
+
+  return {
+    amount: BigInt(balance.amount),
+    raw: apiResult.body
+  };
+}
+
+function getTransferId(apiResult: ApiResult): string | null {
+  const body = asRecord(apiResult.body);
+  const result = asRecord(body?.result);
+
+  if (typeof body?.transferId === "string") {
+    return body.transferId;
+  }
+
+  if (typeof result?.transferId === "string") {
+    return result.transferId;
+  }
+
+  return null;
+}
+
+function isExecutedTransfer(apiResult: ApiResult): boolean {
+  const body = asRecord(apiResult.body);
+  const result = asRecord(body?.result);
+
+  return (
+    apiResult.httpStatus >= 200 &&
+    apiResult.httpStatus < 300 &&
+    body?.status === "success" &&
+    result?.duplicate === false &&
+    result?.transferState === "EXECUTED"
+  );
+}
+
+function isDuplicateReplay(apiResult: ApiResult, expectedTransferId: string): boolean {
+  const body = asRecord(apiResult.body);
+  const result = asRecord(body?.result);
+
+  return (
+    apiResult.httpStatus >= 200 &&
+    apiResult.httpStatus < 300 &&
+    body?.status === "success" &&
+    result?.duplicate === true &&
+    typeof body?.transferId === "string" &&
+    body.transferId === expectedTransferId
+  );
+}
+
+function isInsufficientFundsRejected(apiResult: ApiResult): boolean {
+  const body = asRecord(apiResult.body);
+  const result = asRecord(body?.result);
+  const error = asRecord(body?.error);
+  const persistedOutcome = asRecord(result?.persistedOutcome);
+
+  return (
+    error?.sourceFailureId === "FAIL-005" ||
+    persistedOutcome?.sourceFailureId === "FAIL-005" ||
+    result?.requestStatus === "FAILED"
+  );
+}
+
+function ledgerTraceIsComplete(
+  apiResult: ApiResult,
+  transferId: string,
+  sourceAccountId: string,
+  destinationAccountId: string,
+  assetId: string,
+  amount: string
+): boolean {
+  const body = asRecord(apiResult.body);
+  const result = asRecord(body?.result);
+  const entries = result?.ledgerEntries;
+
+  if (!Array.isArray(entries) || entries.length !== 2) {
+    return false;
+  }
+
+  const sourceDebit = entries.find(
+    (entry) =>
+      entry.transferId === transferId &&
+      entry.accountId === sourceAccountId &&
+      entry.assetId === assetId &&
+      entry.direction === "DEBIT" &&
+      entry.amountDelta === `-${amount}`
+  );
+
+  const destinationCredit = entries.find(
+    (entry) =>
+      entry.transferId === transferId &&
+      entry.accountId === destinationAccountId &&
+      entry.assetId === assetId &&
+      entry.direction === "CREDIT" &&
+      entry.amountDelta === amount
+  );
+
+  return Boolean(sourceDebit && destinationCredit);
 }
 
 export default function Home() {
   const [form, setForm] = useState<TransferForm>(DEFAULT_FORM);
-  const [lastTransferId, setLastTransferId] = useState("");
-  const [selectedTransferId, setSelectedTransferId] = useState("");
-  const [sourceBalances, setSourceBalances] = useState<JsonValue>(null);
-  const [destinationBalances, setDestinationBalances] = useState<JsonValue>(null);
-  const [transferRead, setTransferRead] = useState<JsonValue>(null);
-  const [ledgerEntries, setLedgerEntries] = useState<JsonValue>(null);
-  const [result, setResult] = useState<JsonValue>(null);
+  const [steps, setSteps] = useState<VerificationStep[]>(cloneInitialSteps());
   const [loading, setLoading] = useState(false);
+  const [rawOutput, setRawOutput] = useState<Record<string, unknown>>({});
+  const [lastTransferId, setLastTransferId] = useState("");
+  const [lastRequestIdentity, setLastRequestIdentity] = useState("");
 
-  const activeTransferId = useMemo(
-    () => selectedTransferId || lastTransferId,
-    [selectedTransferId, lastTransferId]
-  );
+  function updateStep(
+    id: string,
+    status: StepStatus,
+    observed: string
+  ): void {
+    setSteps((current) =>
+      current.map((step) =>
+        step.id === id
+          ? {
+              ...step,
+              status,
+              observed
+            }
+          : step
+      )
+    );
+  }
 
-  function updateField(field: keyof TransferForm, value: string) {
+  function updateForm(field: keyof TransferForm, value: string): void {
     setForm((current) => ({
       ...current,
       [field]: value
     }));
   }
 
-  async function submitTransfer(bodyOverride?: Partial<TransferForm>) {
+  async function runVerification(): Promise<void> {
     setLoading(true);
+    setSteps(cloneInitialSteps());
+    setRawOutput({});
+    setLastTransferId("");
+    setLastRequestIdentity("");
+
+    const requestIdentity = `req_ui_verify_${Date.now()}`;
+    const amount = BigInt(form.amount);
+
+    setLastRequestIdentity(requestIdentity);
 
     try {
-      const body = {
-        ...form,
-        ...bodyOverride
+      const sourceBefore = await getAccountBalance(
+        form.sourceAccountId,
+        form.assetId
+      );
+
+      const destinationBefore = await getAccountBalance(
+        form.destinationAccountId,
+        form.assetId
+      );
+
+      const transferBody = {
+        requestIdentity,
+        sourceAccountId: form.sourceAccountId,
+        destinationAccountId: form.destinationAccountId,
+        assetId: form.assetId,
+        amount: form.amount
       };
 
-      const response = await fetch("/api/transfers", {
+      updateStep("valid-transfer", "running", "Submitting Transfer Request.");
+
+      const transferResponse = await fetchJson("/api/transfers", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(transferBody)
       });
 
-      const json = await readJsonResponse(response);
+      const transferId = getTransferId(transferResponse);
 
-      setResult({
-        httpStatus: response.status,
-        body: json
-      });
+      setRawOutput((current) => ({
+        ...current,
+        validTransferResponse: transferResponse.body
+      }));
 
-      const maybeTransferId =
-        typeof json === "object" &&
-        json !== null &&
-        "transferId" in json &&
-        typeof json.transferId === "string"
-          ? json.transferId
-          : undefined;
-
-      if (maybeTransferId) {
-        setLastTransferId(maybeTransferId);
-        setSelectedTransferId(maybeTransferId);
+      if (!transferId || !isExecutedTransfer(transferResponse)) {
+        updateStep(
+          "valid-transfer",
+          "fail",
+          `Expected EXECUTED new Transfer. Observed HTTP ${transferResponse.httpStatus}.`
+        );
+        setLoading(false);
+        return;
       }
-    } finally {
-      setLoading(false);
-    }
-  }
 
-  async function loadBalances() {
-    setLoading(true);
+      setLastTransferId(transferId);
 
-    try {
-      const [sourceResponse, destinationResponse] = await Promise.all([
-        fetch(`/api/accounts/${form.sourceAccountId}/balances`),
-        fetch(`/api/accounts/${form.destinationAccountId}/balances`)
-      ]);
-
-      setSourceBalances({
-        httpStatus: sourceResponse.status,
-        body: await readJsonResponse(sourceResponse)
-      });
-
-      setDestinationBalances({
-        httpStatus: destinationResponse.status,
-        body: await readJsonResponse(destinationResponse)
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function loadTransfer() {
-    if (!activeTransferId) {
-      setResult({
-        error: "No transferId available. Submit a Transfer first or paste one."
-      });
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      const response = await fetch(`/api/transfers/${activeTransferId}`);
-
-      setTransferRead({
-        httpStatus: response.status,
-        body: await readJsonResponse(response)
-      });
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function loadLedgerEntries() {
-    if (!activeTransferId) {
-      setResult({
-        error: "No transferId available. Submit a Transfer first or paste one."
-      });
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      const response = await fetch(
-        `/api/transfers/${activeTransferId}/ledger-entries`
+      updateStep(
+        "valid-transfer",
+        "pass",
+        `Transfer executed. transferId=${transferId}`
       );
 
-      setLedgerEntries({
-        httpStatus: response.status,
-        body: await readJsonResponse(response)
+      updateStep("balance-delta", "running", "Reading Balances after Transfer.");
+
+      const sourceAfter = await getAccountBalance(
+        form.sourceAccountId,
+        form.assetId
+      );
+
+      const destinationAfter = await getAccountBalance(
+        form.destinationAccountId,
+        form.assetId
+      );
+
+      const expectedSourceAfter = sourceBefore.amount - amount;
+      const expectedDestinationAfter = destinationBefore.amount + amount;
+
+      setRawOutput((current) => ({
+        ...current,
+        sourceBalanceBefore: sourceBefore.raw,
+        destinationBalanceBefore: destinationBefore.raw,
+        sourceBalanceAfter: sourceAfter.raw,
+        destinationBalanceAfter: destinationAfter.raw
+      }));
+
+      const balanceDeltaPass =
+        sourceAfter.amount === expectedSourceAfter &&
+        destinationAfter.amount === expectedDestinationAfter;
+
+      updateStep(
+        "balance-delta",
+        balanceDeltaPass ? "pass" : "fail",
+        `Source ${sourceBefore.amount} → ${sourceAfter.amount}; destination ${destinationBefore.amount} → ${destinationAfter.amount}. Expected source ${expectedSourceAfter}, destination ${expectedDestinationAfter}.`
+      );
+
+      updateStep("ledger-trace", "running", "Reading LedgerEntries.");
+
+      const ledgerResponse = await fetchJson(
+        `/api/transfers/${transferId}/ledger-entries`
+      );
+
+      setRawOutput((current) => ({
+        ...current,
+        ledgerEntriesResponse: ledgerResponse.body
+      }));
+
+      const ledgerPass = ledgerTraceIsComplete(
+        ledgerResponse,
+        transferId,
+        form.sourceAccountId,
+        form.destinationAccountId,
+        form.assetId,
+        form.amount
+      );
+
+      updateStep(
+        "ledger-trace",
+        ledgerPass ? "pass" : "fail",
+        ledgerPass
+          ? `Ledger trace complete: DEBIT -${form.amount}, CREDIT ${form.amount}.`
+          : "Ledger trace did not match expected two-entry Transfer representation."
+      );
+
+      updateStep(
+        "duplicate-request",
+        "running",
+        "Submitting same requestIdentity again."
+      );
+
+      const duplicateResponse = await fetchJson("/api/transfers", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(transferBody)
       });
+
+      const sourceAfterDuplicate = await getAccountBalance(
+        form.sourceAccountId,
+        form.assetId
+      );
+
+      const destinationAfterDuplicate = await getAccountBalance(
+        form.destinationAccountId,
+        form.assetId
+      );
+
+      setRawOutput((current) => ({
+        ...current,
+        duplicateResponse: duplicateResponse.body,
+        sourceBalanceAfterDuplicate: sourceAfterDuplicate.raw,
+        destinationBalanceAfterDuplicate: destinationAfterDuplicate.raw
+      }));
+
+      const duplicatePass =
+        isDuplicateReplay(duplicateResponse, transferId) &&
+        sourceAfterDuplicate.amount === sourceAfter.amount &&
+        destinationAfterDuplicate.amount === destinationAfter.amount;
+
+      updateStep(
+        "duplicate-request",
+        duplicatePass ? "pass" : "fail",
+        duplicatePass
+          ? "Duplicate Request replayed persisted outcome and did not mutate Balances."
+          : "Duplicate Request did not preserve expected idempotent outcome."
+      );
+
+      updateStep(
+        "invalid-rejection",
+        "running",
+        "Submitting guaranteed insufficient-funds Transfer."
+      );
+
+      const invalidRequestIdentity = `req_ui_invalid_${Date.now()}`;
+      const tooLargeAmount = (sourceAfterDuplicate.amount + BigInt(1)).toString();
+
+      const invalidResponse = await fetchJson("/api/transfers", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          ...transferBody,
+          requestIdentity: invalidRequestIdentity,
+          amount: tooLargeAmount
+        })
+      });
+
+      const sourceAfterInvalid = await getAccountBalance(
+        form.sourceAccountId,
+        form.assetId
+      );
+
+      const destinationAfterInvalid = await getAccountBalance(
+        form.destinationAccountId,
+        form.assetId
+      );
+
+      setRawOutput((current) => ({
+        ...current,
+        invalidResponse: invalidResponse.body,
+        sourceBalanceAfterInvalid: sourceAfterInvalid.raw,
+        destinationBalanceAfterInvalid: destinationAfterInvalid.raw
+      }));
+
+      const invalidPass =
+        isInsufficientFundsRejected(invalidResponse) &&
+        sourceAfterInvalid.amount === sourceAfterDuplicate.amount &&
+        destinationAfterInvalid.amount === destinationAfterDuplicate.amount;
+
+      updateStep(
+        "invalid-rejection",
+        invalidPass ? "pass" : "fail",
+        invalidPass
+          ? `Rejected insufficient funds with no Balance mutation. Tried amount=${tooLargeAmount}.`
+          : "Invalid Transfer did not produce expected FAIL-005-style rejection or Balance changed."
+      );
+    } catch (error) {
+      setRawOutput((current) => ({
+        ...current,
+        unexpectedError:
+          error instanceof Error ? error.message : "Unknown verification error"
+      }));
     } finally {
       setLoading(false);
     }
   }
 
-  async function runHappyPathDemo() {
-    const requestIdentity = "req_ui_demo_" + Date.now().toString();
-
-    setForm((current) => ({
-      ...current,
-      requestIdentity,
-      amount: "100"
-    }));
-
-    await submitTransfer({
-      requestIdentity,
-      amount: "100"
-    });
-
-    await loadBalances();
-  }
-
-  async function runDuplicateDemo() {
-    await submitTransfer({
-      requestIdentity: form.requestIdentity
-    });
-
-    await loadBalances();
-  }
-
-  async function runInsufficientFundsDemo() {
-    const requestIdentity = "req_ui_insufficient_" + Date.now().toString();
-
-    setForm((current) => ({
-      ...current,
-      requestIdentity,
-      amount: "1000000000"
-    }));
-
-    await submitTransfer({
-      requestIdentity,
-      amount: "1000000000"
-    });
-
-    await loadBalances();
-  }
+  const passCount = steps.filter((step) => step.status === "pass").length;
+  const failCount = steps.filter((step) => step.status === "fail").length;
+  const complete = passCount === steps.length;
 
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        background: "#f6f8fa",
-        color: "#24292f",
-        padding: "32px",
-        fontFamily:
-          'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
-      }}
-    >
-      <section style={{ maxWidth: "1200px", margin: "0 auto" }}>
-        <header style={{ marginBottom: "24px" }}>
-          <p
-            style={{
-              margin: "0 0 8px",
-              color: "#57606a",
-              fontSize: "14px",
-              fontWeight: 700,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase"
-            }}
-          >
-            Deterministic Ledger Engine
-          </p>
+    <main style={pageStyle}>
+      <section style={shellStyle}>
+        <header style={headerStyle}>
+          <div>
+            <div style={eyebrowStyle}>Deterministic Ledger Engine</div>
+            <h1 style={titleStyle}>Transfer MVP verification dashboard</h1>
+            <p style={subtitleStyle}>
+              One click runs the core runtime smoke checks: valid Transfer,
+              Balance delta, LedgerEntry trace, duplicate Request replay, and
+              insufficient-funds rejection.
+            </p>
+          </div>
 
-          <h1 style={{ margin: 0, fontSize: "36px", lineHeight: 1.1 }}>
-            Transfer-only MVP demo
-          </h1>
-
-          <p style={{ maxWidth: "760px", color: "#57606a", lineHeight: 1.6 }}>
-            This page exercises the routed API surface: submit a Transfer,
-            replay the same Request identity, read Balances, inspect a Transfer,
-            and inspect LedgerEntries.
-          </p>
+          <div style={scoreCardStyle}>
+            <div style={scoreNumberStyle}>
+              {passCount}/{steps.length}
+            </div>
+            <div style={scoreLabelStyle}>
+              {complete ? "All checks passed" : failCount > 0 ? "Check failed" : "Ready"}
+            </div>
+          </div>
         </header>
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(320px, 420px) 1fr",
-            gap: "18px",
-            alignItems: "start"
-          }}
-        >
-          <section style={cardStyle}>
-            <h2 style={{ marginTop: 0 }}>Transfer Request</h2>
+        <section style={gridStyle}>
+          <div style={cardStyle}>
+            <h2 style={sectionTitleStyle}>Demo input</h2>
 
-            <div style={{ display: "grid", gap: "12px" }}>
+            <div style={formGridStyle}>
               <label>
-                <div>requestIdentity</div>
-                <input
-                  style={inputStyle}
-                  value={form.requestIdentity}
-                  onChange={(event) =>
-                    updateField("requestIdentity", event.target.value)
-                  }
-                />
-              </label>
-
-              <label>
-                <div>sourceAccountId</div>
+                <div style={labelStyle}>Source Account</div>
                 <input
                   style={inputStyle}
                   value={form.sourceAccountId}
                   onChange={(event) =>
-                    updateField("sourceAccountId", event.target.value)
+                    updateForm("sourceAccountId", event.target.value)
                   }
                 />
               </label>
 
               <label>
-                <div>destinationAccountId</div>
+                <div style={labelStyle}>Destination Account</div>
                 <input
                   style={inputStyle}
                   value={form.destinationAccountId}
                   onChange={(event) =>
-                    updateField("destinationAccountId", event.target.value)
+                    updateForm("destinationAccountId", event.target.value)
                   }
                 />
               </label>
 
               <label>
-                <div>assetId</div>
+                <div style={labelStyle}>Asset</div>
                 <input
                   style={inputStyle}
                   value={form.assetId}
-                  onChange={(event) => updateField("assetId", event.target.value)}
+                  onChange={(event) => updateForm("assetId", event.target.value)}
                 />
               </label>
 
               <label>
-                <div>amount</div>
+                <div style={labelStyle}>Amount</div>
                 <input
                   style={inputStyle}
                   value={form.amount}
-                  onChange={(event) => updateField("amount", event.target.value)}
+                  onChange={(event) => updateForm("amount", event.target.value)}
                 />
               </label>
             </div>
 
-            <div
-              style={{
-                display: "flex",
-                flexWrap: "wrap",
-                gap: "10px",
-                marginTop: "18px"
-              }}
+            <button
+              style={loading ? disabledButtonStyle : primaryButtonStyle}
+              disabled={loading}
+              onClick={runVerification}
             >
-              <button
-                style={buttonStyle}
-                disabled={loading}
-                onClick={() => submitTransfer()}
-              >
-                Submit Transfer
-              </button>
+              {loading ? "Running verification..." : "Run full verification"}
+            </button>
 
-              <button
-                style={secondaryButtonStyle}
-                disabled={loading}
-                onClick={runHappyPathDemo}
-              >
-                Happy Path
-              </button>
-
-              <button
-                style={secondaryButtonStyle}
-                disabled={loading}
-                onClick={runDuplicateDemo}
-              >
-                Duplicate Request
-              </button>
-
-              <button
-                style={secondaryButtonStyle}
-                disabled={loading}
-                onClick={runInsufficientFundsDemo}
-              >
-                Insufficient Funds
-              </button>
+            <div style={smallInfoStyle}>
+              <strong>Last requestIdentity:</strong>{" "}
+              {lastRequestIdentity || "Not run yet"}
+              <br />
+              <strong>Last transferId:</strong> {lastTransferId || "Not run yet"}
             </div>
-          </section>
+          </div>
 
-          <section style={cardStyle}>
-            <h2 style={{ marginTop: 0 }}>Read / Trace</h2>
+          <div style={cardStyle}>
+            <h2 style={sectionTitleStyle}>What this proves visually</h2>
 
-            <div style={{ display: "grid", gap: "12px" }}>
-              <label>
-                <div>transferId</div>
-                <input
-                  style={inputStyle}
-                  value={selectedTransferId}
-                  placeholder={lastTransferId || "Submit a Transfer first"}
-                  onChange={(event) => setSelectedTransferId(event.target.value)}
-                />
-              </label>
+            <ol style={explainListStyle}>
+              <li>Transfer must execute through the routed API path.</li>
+              <li>Balances must change by the exact atomic-unit amount.</li>
+              <li>LedgerEntries must explain the Balance Change.</li>
+              <li>Duplicate Request must not create another mutation.</li>
+              <li>Invalid Balance state must be rejected without mutation.</li>
+            </ol>
 
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
-                <button
-                  style={buttonStyle}
-                  disabled={loading}
-                  onClick={loadBalances}
-                >
-                  Load Balances
-                </button>
-
-                <button
-                  style={secondaryButtonStyle}
-                  disabled={loading}
-                  onClick={loadTransfer}
-                >
-                  Read Transfer
-                </button>
-
-                <button
-                  style={secondaryButtonStyle}
-                  disabled={loading}
-                  onClick={loadLedgerEntries}
-                >
-                  Read LedgerEntries
-                </button>
-              </div>
-            </div>
-
-            <div
-              style={{
-                marginTop: "18px",
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: "12px"
-              }}
-            >
-              <div>
-                <h3>Source Balance</h3>
-                <pre style={preStyle}>{pretty(sourceBalances)}</pre>
-              </div>
-
-              <div>
-                <h3>Destination Balance</h3>
-                <pre style={preStyle}>{pretty(destinationBalances)}</pre>
-              </div>
-            </div>
-          </section>
-        </div>
-
-        <section
-          style={{
-            ...cardStyle,
-            marginTop: "18px"
-          }}
-        >
-          <h2 style={{ marginTop: 0 }}>Operation Result</h2>
-          <pre style={preStyle}>{pretty(result)}</pre>
+            <p style={noteStyle}>
+              This dashboard is a demo aid. Formal proof remains the routed source
+              mapping, tests, build checks, and runtime evidence.
+            </p>
+          </div>
         </section>
 
-        <section
-          style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr",
-            gap: "18px",
-            marginTop: "18px"
-          }}
-        >
-          <div style={cardStyle}>
-            <h2 style={{ marginTop: 0 }}>Transfer Read</h2>
-            <pre style={preStyle}>{pretty(transferRead)}</pre>
-          </div>
+        <section style={cardStyle}>
+          <h2 style={sectionTitleStyle}>Verification checklist</h2>
 
-          <div style={cardStyle}>
-            <h2 style={{ marginTop: 0 }}>LedgerEntry Trace</h2>
-            <pre style={preStyle}>{pretty(ledgerEntries)}</pre>
+          <div style={stepsStyle}>
+            {steps.map((step) => (
+              <article key={step.id} style={stepCardStyle}>
+                <div style={stepHeaderStyle}>
+                  <h3 style={stepTitleStyle}>{step.title}</h3>
+                  <span style={statusStyle(step.status)}>
+                    {statusLabel(step.status)}
+                  </span>
+                </div>
+
+                <div style={stepBodyStyle}>
+                  <div>
+                    <div style={miniLabelStyle}>Expected</div>
+                    <p style={paragraphStyle}>{step.expected}</p>
+                  </div>
+
+                  <div>
+                    <div style={miniLabelStyle}>Observed</div>
+                    <p style={paragraphStyle}>{step.observed}</p>
+                  </div>
+                </div>
+
+                <div style={sourceRefsStyle}>
+                  {step.sourceRefs.map((ref) => (
+                    <span key={ref} style={sourceRefPillStyle}>
+                      {ref}
+                    </span>
+                  ))}
+                </div>
+              </article>
+            ))}
           </div>
+        </section>
+
+        <section style={cardStyle}>
+          <h2 style={sectionTitleStyle}>Raw API evidence</h2>
+          <p style={noteStyle}>
+            Keep this for debugging and interview walkthroughs. The checklist above
+            is the readable interpretation.
+          </p>
+
+          <pre style={preStyle}>{pretty(rawOutput)}</pre>
         </section>
       </section>
     </main>
   );
 }
 
-const preStyle: React.CSSProperties = {
+const pageStyle: CSSProperties = {
+  minHeight: "100vh",
+  background: "#f6f8fa",
+  color: "#24292f",
+  padding: "32px",
+  fontFamily:
+    'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
+};
+
+const shellStyle: CSSProperties = {
+  maxWidth: "1200px",
+  margin: "0 auto"
+};
+
+const headerStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  gap: "24px",
+  alignItems: "flex-start",
+  marginBottom: "24px"
+};
+
+const eyebrowStyle: CSSProperties = {
+  color: "#57606a",
+  fontSize: "13px",
+  fontWeight: 800,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase",
+  marginBottom: "8px"
+};
+
+const titleStyle: CSSProperties = {
   margin: 0,
+  fontSize: "38px",
+  lineHeight: 1.08
+};
+
+const subtitleStyle: CSSProperties = {
+  maxWidth: "760px",
+  color: "#57606a",
+  lineHeight: 1.6,
+  fontSize: "16px"
+};
+
+const scoreCardStyle: CSSProperties = {
+  minWidth: "160px",
+  padding: "18px",
+  borderRadius: "16px",
+  background: "#0d1117",
+  color: "#ffffff",
+  textAlign: "center"
+};
+
+const scoreNumberStyle: CSSProperties = {
+  fontSize: "34px",
+  fontWeight: 900
+};
+
+const scoreLabelStyle: CSSProperties = {
+  color: "#c9d1d9",
+  fontSize: "13px",
+  fontWeight: 700
+};
+
+const gridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: "18px",
+  alignItems: "stretch",
+  marginBottom: "18px"
+};
+
+const cardStyle: CSSProperties = {
+  border: "1px solid #d0d7de",
+  borderRadius: "14px",
+  padding: "18px",
+  background: "#ffffff",
+  boxShadow: "0 1px 3px rgba(0,0,0,0.06)"
+};
+
+const sectionTitleStyle: CSSProperties = {
+  marginTop: 0,
+  marginBottom: "14px",
+  fontSize: "20px"
+};
+
+const formGridStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: "12px",
+  marginBottom: "16px"
+};
+
+const labelStyle: CSSProperties = {
+  fontSize: "13px",
+  fontWeight: 700,
+  marginBottom: "6px"
+};
+
+const inputStyle: CSSProperties = {
+  width: "100%",
+  padding: "10px 12px",
+  border: "1px solid #d0d7de",
+  borderRadius: "8px",
+  fontSize: "14px",
+  boxSizing: "border-box"
+};
+
+const primaryButtonStyle: CSSProperties = {
+  width: "100%",
+  padding: "12px 14px",
+  border: "1px solid #1f6feb",
+  borderRadius: "10px",
+  background: "#1f6feb",
+  color: "#ffffff",
+  fontWeight: 800,
+  cursor: "pointer",
+  fontSize: "15px"
+};
+
+const disabledButtonStyle: CSSProperties = {
+  ...primaryButtonStyle,
+  opacity: 0.65,
+  cursor: "not-allowed"
+};
+
+const smallInfoStyle: CSSProperties = {
+  marginTop: "14px",
   padding: "12px",
-  minHeight: "120px",
-  maxHeight: "360px",
+  background: "#f6f8fa",
+  borderRadius: "10px",
+  color: "#57606a",
+  fontSize: "13px",
+  lineHeight: 1.6,
+  wordBreak: "break-word"
+};
+
+const explainListStyle: CSSProperties = {
+  margin: 0,
+  paddingLeft: "20px",
+  lineHeight: 1.8
+};
+
+const noteStyle: CSSProperties = {
+  color: "#57606a",
+  lineHeight: 1.6
+};
+
+const stepsStyle: CSSProperties = {
+  display: "grid",
+  gap: "12px"
+};
+
+const stepCardStyle: CSSProperties = {
+  border: "1px solid #d8dee4",
+  borderRadius: "12px",
+  padding: "14px",
+  background: "#ffffff"
+};
+
+const stepHeaderStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "12px",
+  marginBottom: "10px"
+};
+
+const stepTitleStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "16px"
+};
+
+const stepBodyStyle: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr 1fr",
+  gap: "12px"
+};
+
+const miniLabelStyle: CSSProperties = {
+  fontSize: "12px",
+  fontWeight: 800,
+  color: "#57606a",
+  textTransform: "uppercase",
+  letterSpacing: "0.06em",
+  marginBottom: "4px"
+};
+
+const paragraphStyle: CSSProperties = {
+  margin: 0,
+  lineHeight: 1.5
+};
+
+const sourceRefsStyle: CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "6px",
+  marginTop: "12px"
+};
+
+const sourceRefPillStyle: CSSProperties = {
+  padding: "3px 7px",
+  borderRadius: "999px",
+  background: "#f6f8fa",
+  border: "1px solid #d0d7de",
+  color: "#57606a",
+  fontSize: "12px",
+  fontWeight: 700
+};
+
+const preStyle: CSSProperties = {
+  margin: 0,
+  padding: "14px",
+  minHeight: "220px",
+  maxHeight: "520px",
   overflow: "auto",
   background: "#0d1117",
   color: "#e6edf3",
-  borderRadius: "10px",
+  borderRadius: "12px",
   fontSize: "12px",
   lineHeight: 1.5
 };
