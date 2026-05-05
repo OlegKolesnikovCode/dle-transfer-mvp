@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum TransferState {
+  REQUESTED
+  VALIDATED
+  EXECUTED
+  FAILED
+}
+
+enum LedgerEntryDirection {
+  DEBIT
+  CREDIT
+}
+
+enum RequestOperationType {
+  TRANSFER
+}
+
+enum RequestStatus {
+  RECEIVED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model Account {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  balances             Balance[]
+  ledgerEntries        LedgerEntry[]
+  sourceTransfers      Transfer[]    @relation("TransferSourceAccount")
+  destinationTransfers Transfer[]    @relation("TransferDestinationAccount")
+
+  @@map("accounts")
+}
+
+model Asset {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  balances      Balance[]
+  transfers     Transfer[]
+  ledgerEntries LedgerEntry[]
+
+  @@map("assets")
+}
+
+model Balance {
+  id        String   @id @default(cuid())
+  accountId String
+  assetId   String
+  amount    Decimal  @db.Decimal(38, 0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  asset   Asset   @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@unique([accountId, assetId])
+  @@map("balances")
+}
+
+model Transfer {
+  id                   String        @id @default(cuid())
+  requestId            String        @unique
+  sourceAccountId      String
+  destinationAccountId String
+  assetId              String
+  amount               Decimal       @db.Decimal(38, 0)
+  state                TransferState @default(REQUESTED)
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  executedAt           DateTime?
+  failedAt             DateTime?
+
+  request            Request       @relation(fields: [requestId], references: [id], onDelete: Restrict)
+  sourceAccount      Account       @relation("TransferSourceAccount", fields: [sourceAccountId], references: [id], onDelete: Restrict)
+  destinationAccount Account       @relation("TransferDestinationAccount", fields: [destinationAccountId], references: [id], onDelete: Restrict)
+  asset              Asset         @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  ledgerEntries      LedgerEntry[]
+
+  @@map("transfers")
+}
+
+model LedgerEntry {
+  id          String               @id @default(cuid())
+  transferId  String
+  accountId   String
+  assetId     String
+  amountDelta Decimal              @db.Decimal(38, 0)
+  direction   LedgerEntryDirection
+  createdAt   DateTime             @default(now())
+
+  transfer Transfer @relation(fields: [transferId], references: [id], onDelete: Restrict)
+  account  Account  @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  asset    Asset    @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@index([transferId])
+  @@index([accountId, assetId])
+  @@map("ledger_entries")
+}
+
+model Request {
+  id            String               @id @default(cuid())
+  identity      String               @unique
+  operationType RequestOperationType @default(TRANSFER)
+  status        RequestStatus        @default(RECEIVED)
+  responseBody  Json?
+  errorBody     Json?
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  completedAt   DateTime?
+
+  transfer Transfer?
+
+  @@map("requests")
+}
