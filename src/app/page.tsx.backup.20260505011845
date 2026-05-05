@@ -21,7 +21,6 @@ type AccountBalance = {
 };
 
 type StepStatus = "idle" | "running" | "pass" | "fail";
-type ActiveTab = "verification" | "trace";
 
 type VerificationStep = {
   id: string;
@@ -30,20 +29,6 @@ type VerificationStep = {
   status: StepStatus;
   expected: string;
   observed: string;
-};
-
-type TraceEvent = {
-  sequence: number;
-  boundary: string;
-  eventType: string;
-  outcome: string;
-  requestIdentity?: string;
-  requestId?: string;
-  transferId?: string;
-  failureClass?: string;
-  sourceRefs: string[];
-  notes: string;
-  observedAt: string;
 };
 
 const DEFAULT_FORM: TransferForm = {
@@ -205,12 +190,6 @@ function getTransferId(apiResult: ApiResult): string | null {
   return null;
 }
 
-function getRequestId(apiResult: ApiResult): string | undefined {
-  const body = asRecord(apiResult.body);
-
-  return typeof body?.requestId === "string" ? body.requestId : undefined;
-}
-
 function isExecutedTransfer(apiResult: ApiResult): boolean {
   const body = asRecord(apiResult.body);
   const result = asRecord(body?.result);
@@ -289,25 +268,12 @@ function ledgerTraceIsComplete(
 }
 
 export default function Home() {
-  const [activeTab, setActiveTab] = useState<ActiveTab>("verification");
   const [form, setForm] = useState<TransferForm>(DEFAULT_FORM);
   const [steps, setSteps] = useState<VerificationStep[]>(cloneInitialSteps());
-  const [traceEvents, setTraceEvents] = useState<TraceEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [rawOutput, setRawOutput] = useState<Record<string, unknown>>({});
   const [lastTransferId, setLastTransferId] = useState("");
   const [lastRequestIdentity, setLastRequestIdentity] = useState("");
-
-  function addTrace(event: Omit<TraceEvent, "sequence" | "observedAt">): void {
-    setTraceEvents((current) => [
-      ...current,
-      {
-        ...event,
-        sequence: current.length + 1,
-        observedAt: new Date().toISOString()
-      }
-    ]);
-  }
 
   function updateStep(
     id: string,
@@ -336,9 +302,7 @@ export default function Home() {
 
   async function runVerification(): Promise<void> {
     setLoading(true);
-    setActiveTab("verification");
     setSteps(cloneInitialSteps());
-    setTraceEvents([]);
     setRawOutput({});
     setLastTransferId("");
     setLastRequestIdentity("");
@@ -349,14 +313,6 @@ export default function Home() {
     setLastRequestIdentity(requestIdentity);
 
     try {
-      addTrace({
-        boundary: "ARCH-008",
-        eventType: "read.derived",
-        outcome: "read",
-        sourceRefs: ["ARCH-008", "INV-003", "API-005", "TEST-003"],
-        notes: "Reading initial source and destination Balances before Transfer."
-      });
-
       const sourceBefore = await getAccountBalance(
         form.sourceAccountId,
         form.assetId
@@ -377,15 +333,6 @@ export default function Home() {
 
       updateStep("valid-transfer", "running", "Submitting Transfer Request.");
 
-      addTrace({
-        boundary: "ARCH-001",
-        eventType: "request.received",
-        outcome: "accepted",
-        requestIdentity,
-        sourceRefs: ["ARCH-001", "API-001", "API-002", "API-012"],
-        notes: "Demo submitted POST /api/transfers with externally supplied requestIdentity."
-      });
-
       const transferResponse = await fetchJson("/api/transfers", {
         method: "POST",
         headers: {
@@ -395,7 +342,6 @@ export default function Home() {
       });
 
       const transferId = getTransferId(transferResponse);
-      const requestId = getRequestId(transferResponse);
 
       setRawOutput((current) => ({
         ...current,
@@ -403,18 +349,6 @@ export default function Home() {
       }));
 
       if (!transferId || !isExecutedTransfer(transferResponse)) {
-        addTrace({
-          boundary: "ARCH-001",
-          eventType: "response.produced",
-          outcome: "failed",
-          requestIdentity,
-          requestId,
-          transferId: transferId ?? undefined,
-          failureClass: "FAIL-004",
-          sourceRefs: ["API-004", "API-012", "FAIL-004"],
-          notes: `Expected EXECUTED response. Observed HTTP ${transferResponse.httpStatus}.`
-        });
-
         updateStep(
           "valid-transfer",
           "fail",
@@ -425,39 +359,6 @@ export default function Home() {
       }
 
       setLastTransferId(transferId);
-
-      addTrace({
-        boundary: "ARCH-002",
-        eventType: "idempotency.new_execution",
-        outcome: "accepted",
-        requestIdentity,
-        requestId,
-        transferId,
-        sourceRefs: ["ARCH-002", "INV-007", "FAIL-007", "TEST-007"],
-        notes: "Request identity was not a duplicate, so execution entered Consistency Boundary."
-      });
-
-      addTrace({
-        boundary: "ARCH-003",
-        eventType: "consistency.completed",
-        outcome: "executed",
-        requestIdentity,
-        requestId,
-        transferId,
-        sourceRefs: ["ARCH-003", "INV-004", "FSM-005", "TEST-004"],
-        notes: "Transfer execution returned EXECUTED through the API response."
-      });
-
-      addTrace({
-        boundary: "ARCH-004",
-        eventType: "lifecycle.transition_observed",
-        outcome: "executed",
-        requestIdentity,
-        requestId,
-        transferId,
-        sourceRefs: ["ARCH-004", "INV-008", "FSM-005", "TEST-008"],
-        notes: "Observed final Transfer state EXECUTED."
-      });
 
       updateStep(
         "valid-transfer",
@@ -492,18 +393,6 @@ export default function Home() {
         sourceAfter.amount === expectedSourceAfter &&
         destinationAfter.amount === expectedDestinationAfter;
 
-      addTrace({
-        boundary: "ARCH-005",
-        eventType: "balance.change_authorized",
-        outcome: balanceDeltaPass ? "executed" : "failed",
-        requestIdentity,
-        requestId,
-        transferId,
-        failureClass: balanceDeltaPass ? undefined : "FAIL-005",
-        sourceRefs: ["ARCH-005", "INV-005", "INV-006", "TEST-005", "TEST-006"],
-        notes: `Source ${sourceBefore.amount} → ${sourceAfter.amount}; destination ${destinationBefore.amount} → ${destinationAfter.amount}.`
-      });
-
       updateStep(
         "balance-delta",
         balanceDeltaPass ? "pass" : "fail",
@@ -529,32 +418,6 @@ export default function Home() {
         form.assetId,
         form.amount
       );
-
-      addTrace({
-        boundary: "ARCH-006",
-        eventType: "ledger.entries_planned",
-        outcome: ledgerPass ? "executed" : "failed",
-        requestIdentity,
-        requestId,
-        transferId,
-        failureClass: ledgerPass ? undefined : "FAIL-010",
-        sourceRefs: ["ARCH-006", "INV-001", "INV-010", "TEST-001", "TEST-010"],
-        notes: ledgerPass
-          ? `LedgerEntries explain Transfer: DEBIT -${form.amount}, CREDIT ${form.amount}.`
-          : "LedgerEntry trace did not match expected two-entry Transfer representation."
-      });
-
-      addTrace({
-        boundary: "ARCH-007",
-        eventType: "persistence.write_observed",
-        outcome: ledgerPass && balanceDeltaPass ? "executed" : "failed",
-        requestIdentity,
-        requestId,
-        transferId,
-        failureClass: ledgerPass && balanceDeltaPass ? undefined : "FAIL-004",
-        sourceRefs: ["ARCH-007", "INV-003", "INV-004", "TEST-003", "TEST-004"],
-        notes: "Read path observed persisted Balance and LedgerEntry state after execution."
-      });
 
       updateStep(
         "ledger-trace",
@@ -600,20 +463,6 @@ export default function Home() {
         sourceAfterDuplicate.amount === sourceAfter.amount &&
         destinationAfterDuplicate.amount === destinationAfter.amount;
 
-      addTrace({
-        boundary: "ARCH-002",
-        eventType: "request.duplicate_resolved",
-        outcome: duplicatePass ? "resolved_duplicate" : "failed",
-        requestIdentity,
-        requestId,
-        transferId,
-        failureClass: duplicatePass ? undefined : "FAIL-007",
-        sourceRefs: ["ARCH-002", "INV-007", "FAIL-007", "TEST-007"],
-        notes: duplicatePass
-          ? "Duplicate Request replayed persisted outcome and did not mutate Balances."
-          : "Duplicate Request did not preserve expected idempotent outcome."
-      });
-
       updateStep(
         "duplicate-request",
         duplicatePass ? "pass" : "fail",
@@ -630,15 +479,6 @@ export default function Home() {
 
       const invalidRequestIdentity = `req_ui_invalid_${Date.now()}`;
       const tooLargeAmount = (sourceAfterDuplicate.amount + BigInt(1)).toString();
-
-      addTrace({
-        boundary: "ARCH-001",
-        eventType: "request.received",
-        outcome: "accepted",
-        requestIdentity: invalidRequestIdentity,
-        sourceRefs: ["ARCH-001", "API-001", "API-002", "API-012"],
-        notes: "Demo submitted intentionally invalid insufficient-funds Transfer."
-      });
 
       const invalidResponse = await fetchJson("/api/transfers", {
         method: "POST",
@@ -674,28 +514,6 @@ export default function Home() {
         sourceAfterInvalid.amount === sourceAfterDuplicate.amount &&
         destinationAfterInvalid.amount === destinationAfterDuplicate.amount;
 
-      addTrace({
-        boundary: "ARCH-005",
-        eventType: "failure.classified",
-        outcome: invalidPass ? "rejected" : "failed",
-        requestIdentity: invalidRequestIdentity,
-        failureClass: "FAIL-005",
-        sourceRefs: ["ARCH-005", "INV-005", "FAIL-005", "TEST-005"],
-        notes: invalidPass
-          ? `Rejected insufficient funds with no Balance mutation. Tried amount=${tooLargeAmount}.`
-          : "Invalid Transfer did not produce expected FAIL-005-style rejection or Balance changed."
-      });
-
-      addTrace({
-        boundary: "ARCH-001",
-        eventType: "response.produced",
-        outcome: invalidPass ? "rejected" : "failed",
-        requestIdentity: invalidRequestIdentity,
-        failureClass: "FAIL-005",
-        sourceRefs: ["API-004", "API-012", "FAIL-005"],
-        notes: "External response represented rejected Request outcome without exposing internal mutation authority."
-      });
-
       updateStep(
         "invalid-rejection",
         invalidPass ? "pass" : "fail",
@@ -703,17 +521,7 @@ export default function Home() {
           ? `Rejected insufficient funds with no Balance mutation. Tried amount=${tooLargeAmount}.`
           : "Invalid Transfer did not produce expected FAIL-005-style rejection or Balance changed."
       );
-
-      setActiveTab("trace");
     } catch (error) {
-      addTrace({
-        boundary: "DEMO_UI",
-        eventType: "demo.error",
-        outcome: "failed",
-        sourceRefs: ["TEST-011"],
-        notes: error instanceof Error ? error.message : "Unknown verification error"
-      });
-
       setRawOutput((current) => ({
         ...current,
         unexpectedError:
@@ -734,11 +542,11 @@ export default function Home() {
         <header style={headerStyle}>
           <div>
             <div style={eyebrowStyle}>Deterministic Ledger Engine</div>
-            <h1 style={titleStyle}>Transfer MVP demo</h1>
+            <h1 style={titleStyle}>Transfer MVP verification dashboard</h1>
             <p style={subtitleStyle}>
-              Run the core runtime smoke checks, then inspect a demo-only
-              structured trace showing which architectural boundaries the data
-              passed through.
+              One click runs the core runtime smoke checks: valid Transfer,
+              Balance delta, LedgerEntry trace, duplicate Request replay, and
+              insufficient-funds rejection.
             </p>
           </div>
 
@@ -752,289 +560,135 @@ export default function Home() {
           </div>
         </header>
 
-        <nav style={tabBarStyle}>
-          <button
-            style={
-              activeTab === "verification" ? activeTabButtonStyle : tabButtonStyle
-            }
-            onClick={() => setActiveTab("verification")}
-          >
-            Verification Dashboard
-          </button>
+        <section style={gridStyle}>
+          <div style={cardStyle}>
+            <h2 style={sectionTitleStyle}>Demo input</h2>
 
-          <button
-            style={activeTab === "trace" ? activeTabButtonStyle : tabButtonStyle}
-            onClick={() => setActiveTab("trace")}
-          >
-            Structured Trace
-          </button>
-        </nav>
+            <div style={formGridStyle}>
+              <label>
+                <div style={labelStyle}>Source Account</div>
+                <input
+                  style={inputStyle}
+                  value={form.sourceAccountId}
+                  onChange={(event) =>
+                    updateForm("sourceAccountId", event.target.value)
+                  }
+                />
+              </label>
 
-        {activeTab === "verification" ? (
-          <>
-            <section style={gridStyle}>
-              <div style={cardStyle}>
-                <h2 style={sectionTitleStyle}>Demo input</h2>
+              <label>
+                <div style={labelStyle}>Destination Account</div>
+                <input
+                  style={inputStyle}
+                  value={form.destinationAccountId}
+                  onChange={(event) =>
+                    updateForm("destinationAccountId", event.target.value)
+                  }
+                />
+              </label>
 
-                <div style={formGridStyle}>
-                  <label>
-                    <div style={labelStyle}>Source Account</div>
-                    <input
-                      style={inputStyle}
-                      value={form.sourceAccountId}
-                      onChange={(event) =>
-                        updateForm("sourceAccountId", event.target.value)
-                      }
-                    />
-                  </label>
+              <label>
+                <div style={labelStyle}>Asset</div>
+                <input
+                  style={inputStyle}
+                  value={form.assetId}
+                  onChange={(event) => updateForm("assetId", event.target.value)}
+                />
+              </label>
 
-                  <label>
-                    <div style={labelStyle}>Destination Account</div>
-                    <input
-                      style={inputStyle}
-                      value={form.destinationAccountId}
-                      onChange={(event) =>
-                        updateForm("destinationAccountId", event.target.value)
-                      }
-                    />
-                  </label>
+              <label>
+                <div style={labelStyle}>Amount</div>
+                <input
+                  style={inputStyle}
+                  value={form.amount}
+                  onChange={(event) => updateForm("amount", event.target.value)}
+                />
+              </label>
+            </div>
 
-                  <label>
-                    <div style={labelStyle}>Asset</div>
-                    <input
-                      style={inputStyle}
-                      value={form.assetId}
-                      onChange={(event) =>
-                        updateForm("assetId", event.target.value)
-                      }
-                    />
-                  </label>
+            <button
+              style={loading ? disabledButtonStyle : primaryButtonStyle}
+              disabled={loading}
+              onClick={runVerification}
+            >
+              {loading ? "Running verification..." : "Run full verification"}
+            </button>
 
-                  <label>
-                    <div style={labelStyle}>Amount</div>
-                    <input
-                      style={inputStyle}
-                      value={form.amount}
-                      onChange={(event) =>
-                        updateForm("amount", event.target.value)
-                      }
-                    />
-                  </label>
-                </div>
+            <div style={smallInfoStyle}>
+              <strong>Last requestIdentity:</strong>{" "}
+              {lastRequestIdentity || "Not run yet"}
+              <br />
+              <strong>Last transferId:</strong> {lastTransferId || "Not run yet"}
+            </div>
+          </div>
 
-                <button
-                  style={loading ? disabledButtonStyle : primaryButtonStyle}
-                  disabled={loading}
-                  onClick={runVerification}
-                >
-                  {loading ? "Running verification..." : "Run full verification"}
-                </button>
+          <div style={cardStyle}>
+            <h2 style={sectionTitleStyle}>What this proves visually</h2>
 
-                <div style={smallInfoStyle}>
-                  <strong>Last requestIdentity:</strong>{" "}
-                  {lastRequestIdentity || "Not run yet"}
-                  <br />
-                  <strong>Last transferId:</strong>{" "}
-                  {lastTransferId || "Not run yet"}
-                </div>
-              </div>
+            <ol style={explainListStyle}>
+              <li>Transfer must execute through the routed API path.</li>
+              <li>Balances must change by the exact atomic-unit amount.</li>
+              <li>LedgerEntries must explain the Balance Change.</li>
+              <li>Duplicate Request must not create another mutation.</li>
+              <li>Invalid Balance state must be rejected without mutation.</li>
+            </ol>
 
-              <div style={cardStyle}>
-                <h2 style={sectionTitleStyle}>What this shows</h2>
+            <p style={noteStyle}>
+              This dashboard is a demo aid. Formal proof remains the routed source
+              mapping, tests, build checks, and runtime evidence.
+            </p>
+          </div>
+        </section>
 
-                <ol style={explainListStyle}>
-                  <li>Transfer enters through the Request Boundary.</li>
-                  <li>Idempotency prevents duplicate execution effects.</li>
-                  <li>Consistency Boundary coordinates the atomic write set.</li>
-                  <li>Balances change only through Balance Control.</li>
-                  <li>LedgerEntries explain the Balance Change.</li>
-                  <li>Invalid Balance state is rejected without mutation.</li>
-                </ol>
+        <section style={cardStyle}>
+          <h2 style={sectionTitleStyle}>Verification checklist</h2>
 
-                <p style={noteStyle}>
-                  This UI is a manual demo aid. Formal proof remains the routed
-                  source mapping, tests, build checks, and runtime evidence.
-                </p>
-              </div>
-            </section>
-
-            <section style={cardStyle}>
-              <h2 style={sectionTitleStyle}>Verification checklist</h2>
-
-              <div style={stepsStyle}>
-                {steps.map((step) => (
-                  <article key={step.id} style={stepCardStyle}>
-                    <div style={stepHeaderStyle}>
-                      <h3 style={stepTitleStyle}>{step.title}</h3>
-                      <span style={statusStyle(step.status)}>
-                        {statusLabel(step.status)}
-                      </span>
-                    </div>
-
-                    <div style={stepBodyStyle}>
-                      <div>
-                        <div style={miniLabelStyle}>Expected</div>
-                        <p style={paragraphStyle}>{step.expected}</p>
-                      </div>
-
-                      <div>
-                        <div style={miniLabelStyle}>Observed</div>
-                        <p style={paragraphStyle}>{step.observed}</p>
-                      </div>
-                    </div>
-
-                    <div style={sourceRefsStyle}>
-                      {step.sourceRefs.map((ref) => (
-                        <span key={ref} style={sourceRefPillStyle}>
-                          {ref}
-                        </span>
-                      ))}
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
-
-            <section style={cardStyle}>
-              <h2 style={sectionTitleStyle}>Raw API evidence</h2>
-              <p style={noteStyle}>
-                Keep this for debugging and walkthroughs. The checklist above is
-                the readable interpretation.
-              </p>
-
-              <pre style={preStyle}>{pretty(rawOutput)}</pre>
-            </section>
-          </>
-        ) : (
-          <>
-            <section style={cardStyle}>
-              <h2 style={sectionTitleStyle}>Demo-only structured trace panel</h2>
-
-              <p style={noteStyle}>
-                These trace events are inferred by the frontend from API calls and
-                responses. They are not persisted backend audit records. Use them
-                to explain data flow, not to claim correctness proof.
-              </p>
-
-              <div style={flowStyle}>
-                {[
-                  "ARCH-001 Request",
-                  "ARCH-002 Idempotency",
-                  "ARCH-003 Consistency",
-                  "ARCH-004 Lifecycle",
-                  "ARCH-005 Balance",
-                  "ARCH-006 Ledger",
-                  "ARCH-007 Persistence",
-                  "ARCH-008 Read"
-                ].map((item, index, array) => (
-                  <span key={item} style={flowItemStyle}>
-                    {item}
-                    {index < array.length - 1 ? (
-                      <span style={arrowStyle}>→</span>
-                    ) : null}
+          <div style={stepsStyle}>
+            {steps.map((step) => (
+              <article key={step.id} style={stepCardStyle}>
+                <div style={stepHeaderStyle}>
+                  <h3 style={stepTitleStyle}>{step.title}</h3>
+                  <span style={statusStyle(step.status)}>
+                    {statusLabel(step.status)}
                   </span>
-                ))}
-              </div>
-            </section>
+                </div>
 
-            <section style={cardStyle}>
-              <h2 style={sectionTitleStyle}>Trace timeline</h2>
+                <div style={stepBodyStyle}>
+                  <div>
+                    <div style={miniLabelStyle}>Expected</div>
+                    <p style={paragraphStyle}>{step.expected}</p>
+                  </div>
 
-              {traceEvents.length === 0 ? (
-                <p style={noteStyle}>
-                  No trace events yet. Go to the Verification Dashboard tab and
-                  click “Run full verification.”
-                </p>
-              ) : (
-                <div style={traceListStyle}>
-                  {traceEvents.map((event) => (
-                    <article key={event.sequence} style={traceCardStyle}>
-                      <div style={traceHeaderStyle}>
-                        <div>
-                          <div style={traceSequenceStyle}>
-                            #{event.sequence} · {event.boundary}
-                          </div>
-                          <h3 style={traceTitleStyle}>{event.eventType}</h3>
-                        </div>
+                  <div>
+                    <div style={miniLabelStyle}>Observed</div>
+                    <p style={paragraphStyle}>{step.observed}</p>
+                  </div>
+                </div>
 
-                        <span style={traceOutcomeStyle(event.outcome)}>
-                          {event.outcome}
-                        </span>
-                      </div>
-
-                      <p style={paragraphStyle}>{event.notes}</p>
-
-                      <div style={traceMetaGridStyle}>
-                        <div>
-                          <div style={miniLabelStyle}>Request Identity</div>
-                          <div style={monoStyle}>
-                            {event.requestIdentity || "n/a"}
-                          </div>
-                        </div>
-
-                        <div>
-                          <div style={miniLabelStyle}>Request ID</div>
-                          <div style={monoStyle}>{event.requestId || "n/a"}</div>
-                        </div>
-
-                        <div>
-                          <div style={miniLabelStyle}>Transfer ID</div>
-                          <div style={monoStyle}>{event.transferId || "n/a"}</div>
-                        </div>
-
-                        <div>
-                          <div style={miniLabelStyle}>Failure Class</div>
-                          <div style={monoStyle}>
-                            {event.failureClass || "none"}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div style={sourceRefsStyle}>
-                        {event.sourceRefs.map((ref) => (
-                          <span key={ref} style={sourceRefPillStyle}>
-                            {ref}
-                          </span>
-                        ))}
-                      </div>
-
-                      <div style={timestampStyle}>{event.observedAt}</div>
-                    </article>
+                <div style={sourceRefsStyle}>
+                  {step.sourceRefs.map((ref) => (
+                    <span key={ref} style={sourceRefPillStyle}>
+                      {ref}
+                    </span>
                   ))}
                 </div>
-              )}
-            </section>
-          </>
-        )}
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section style={cardStyle}>
+          <h2 style={sectionTitleStyle}>Raw API evidence</h2>
+          <p style={noteStyle}>
+            Keep this for debugging and interview walkthroughs. The checklist above
+            is the readable interpretation.
+          </p>
+
+          <pre style={preStyle}>{pretty(rawOutput)}</pre>
+        </section>
       </section>
     </main>
   );
-}
-
-function traceOutcomeStyle(outcome: string): CSSProperties {
-  const base: CSSProperties = {
-    display: "inline-block",
-    minWidth: "96px",
-    padding: "5px 9px",
-    borderRadius: "999px",
-    fontSize: "12px",
-    fontWeight: 900,
-    textAlign: "center"
-  };
-
-  if (outcome === "executed" || outcome === "accepted" || outcome === "read") {
-    return { ...base, background: "#dafbe1", color: "#116329" };
-  }
-
-  if (outcome === "resolved_duplicate" || outcome === "rejected") {
-    return { ...base, background: "#ddf4ff", color: "#0969da" };
-  }
-
-  if (outcome === "failed") {
-    return { ...base, background: "#ffebe9", color: "#cf222e" };
-  }
-
-  return { ...base, background: "#eaeef2", color: "#57606a" };
 }
 
 const pageStyle: CSSProperties = {
@@ -1056,7 +710,7 @@ const headerStyle: CSSProperties = {
   justifyContent: "space-between",
   gap: "24px",
   alignItems: "flex-start",
-  marginBottom: "20px"
+  marginBottom: "24px"
 };
 
 const eyebrowStyle: CSSProperties = {
@@ -1101,33 +755,6 @@ const scoreLabelStyle: CSSProperties = {
   fontWeight: 700
 };
 
-const tabBarStyle: CSSProperties = {
-  display: "flex",
-  gap: "8px",
-  padding: "6px",
-  border: "1px solid #d0d7de",
-  background: "#ffffff",
-  borderRadius: "12px",
-  marginBottom: "18px",
-  width: "fit-content"
-};
-
-const tabButtonStyle: CSSProperties = {
-  border: "0",
-  borderRadius: "9px",
-  background: "transparent",
-  color: "#57606a",
-  padding: "10px 14px",
-  fontWeight: 800,
-  cursor: "pointer"
-};
-
-const activeTabButtonStyle: CSSProperties = {
-  ...tabButtonStyle,
-  background: "#0969da",
-  color: "#ffffff"
-};
-
 const gridStyle: CSSProperties = {
   display: "grid",
   gridTemplateColumns: "1fr 1fr",
@@ -1141,8 +768,7 @@ const cardStyle: CSSProperties = {
   borderRadius: "14px",
   padding: "18px",
   background: "#ffffff",
-  boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
-  marginBottom: "18px"
+  boxShadow: "0 1px 3px rgba(0,0,0,0.06)"
 };
 
 const sectionTitleStyle: CSSProperties = {
@@ -1286,82 +912,4 @@ const preStyle: CSSProperties = {
   borderRadius: "12px",
   fontSize: "12px",
   lineHeight: 1.5
-};
-
-const flowStyle: CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "8px",
-  alignItems: "center",
-  padding: "14px",
-  background: "#f6f8fa",
-  borderRadius: "12px",
-  border: "1px solid #d0d7de"
-};
-
-const flowItemStyle: CSSProperties = {
-  fontWeight: 800,
-  color: "#24292f"
-};
-
-const arrowStyle: CSSProperties = {
-  color: "#57606a",
-  marginLeft: "8px"
-};
-
-const traceListStyle: CSSProperties = {
-  display: "grid",
-  gap: "12px"
-};
-
-const traceCardStyle: CSSProperties = {
-  border: "1px solid #d8dee4",
-  borderRadius: "12px",
-  padding: "14px",
-  background: "#ffffff"
-};
-
-const traceHeaderStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  gap: "12px",
-  alignItems: "flex-start",
-  marginBottom: "8px"
-};
-
-const traceSequenceStyle: CSSProperties = {
-  color: "#57606a",
-  fontSize: "12px",
-  fontWeight: 800,
-  marginBottom: "4px"
-};
-
-const traceTitleStyle: CSSProperties = {
-  margin: 0,
-  fontSize: "17px"
-};
-
-const traceMetaGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "1fr 1fr",
-  gap: "10px",
-  marginTop: "12px",
-  padding: "12px",
-  background: "#f6f8fa",
-  borderRadius: "10px"
-};
-
-const monoStyle: CSSProperties = {
-  fontFamily:
-    'ui-monospace, SFMono-Regular, SFMono, Consolas, "Liberation Mono", Menlo, monospace',
-  fontSize: "12px",
-  wordBreak: "break-word"
-};
-
-const timestampStyle: CSSProperties = {
-  marginTop: "10px",
-  color: "#57606a",
-  fontSize: "12px",
-  fontFamily:
-    'ui-monospace, SFMono-Regular, SFMono, Consolas, "Liberation Mono", Menlo, monospace'
 };
