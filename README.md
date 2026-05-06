@@ -21,6 +21,8 @@ The system enforces correctness through:
 - 📜 **Ledger Control** — LedgerEntries are created only through the correct boundary.
 - 🙅 **Explicit Rejection** — invalid operations fail at the boundary instead of corrupting state.
 
+[![Run Demo](https://img.shields.io/badge/Run%20the%20Demo-Blue?style=for-the-badge&logo=vercel&logoColor=white)](https://dle-transfer-mvp.vercel.app/)
+
 ---
 
 # 🚀 Start Here: The 2-Minute Proof
@@ -42,7 +44,6 @@ Expected result:
 - LedgerEntries explain the Balance Changes.
 - Response maps to exactly one Request.
 
-[![Run Demo](https://img.shields.io/badge/Run%20the%20Demo-Blue?style=for-the-badge&logo=vercel&logoColor=white)](https://dle-transfer-mvp.vercel.app/)
 ---
 
 ## 🔄 Atomic Rollback
