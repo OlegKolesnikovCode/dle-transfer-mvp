@@ -283,3 +283,16 @@ export async function findLedgerEntriesByAccountAndAsset(
     }
   });
 }
+
+/**
+ * Check if an error is a duplicate request identity constraint violation (P2002).
+ *
+ * Owned by Persistence Boundary per IMP-04 TRANSACTION_DEPENDENCY_RULE.
+ * Consistency Boundary calls this instead of importing Prisma types directly.
+ */
+export function isRequestIdentityDuplicateError(error: unknown): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    (error as Prisma.PrismaClientKnownRequestError).code === "P2002"
+  );
+}

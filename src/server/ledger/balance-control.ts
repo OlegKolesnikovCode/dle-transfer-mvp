@@ -1,10 +1,10 @@
 ﻿import Decimal from "decimal.js";
 import {
   findBalanceByAccountAndAssetInTransaction,
-  updateBalanceAmountInTransaction,
   type PersistenceTransaction
 } from "./persistence-boundary";
-import { validateTransferRequestInput } from "../../domain/operations/transfer/transfer.validation";
+
+import type { ValidatedTransfer } from "../../domain/operations/transfer/transfer.types";
 
 /**
  * Balance Control.
@@ -32,10 +32,6 @@ import { validateTransferRequestInput } from "../../domain/operations/transfer/t
  * This file does not construct API responses.
  */
 
-export type BalanceControlInput = Readonly<{
-  tx: PersistenceTransaction;
-  transferInput: unknown;
-}>;
 
 export type BalanceControlAuthorized = Readonly<{
   ok: true;
@@ -101,20 +97,15 @@ function rejectBalanceControl(
   };
 }
 
+export type BalanceControlInput = Readonly<{
+  tx: PersistenceTransaction;
+  transferInput: ValidatedTransfer;  // Changed from unknown
+}>;
+
 export async function authorizeBalanceChange(
   input: BalanceControlInput
 ): Promise<BalanceControlResult> {
-  const validation = validateTransferRequestInput(input.transferInput);
-
-  if (!validation.ok) {
-    return rejectBalanceControl(
-      "TRANSFER_INPUT_INVALID",
-      "Transfer input failed Balance Control validation.",
-      "FAIL-005"
-    );
-  }
-
-  const transfer = validation.value;
+  const transfer = input.transferInput; // Already validated by Request Boundary
 
   const sourceBalance = await findBalanceByAccountAndAssetInTransaction(
     input.tx,
@@ -144,7 +135,13 @@ export async function authorizeBalanceChange(
     );
   }
 
-  if (
+  // DESIGN CHOICE (L07 SCHEMA-001):
+  // The MVP does not auto-create destination balances.
+  // Accounts and their Balances must be initialized separately before Transfers.
+  // This preserves strict account ownership semantics within the Bounded System.
+  // See L07__DATA_SCHEMA__DATA_MODEL__PERSISTENCE.md SCHEMA-001.
+
+    if (
     sourceBalance.assetId !== transfer.assetId ||
     destinationBalance.assetId !== transfer.assetId
   ) {
@@ -188,17 +185,4 @@ export async function authorizeBalanceChange(
   };
 }
 
-export async function persistAuthorizedBalanceChange(
-  tx: PersistenceTransaction,
-  authorization: BalanceControlAuthorized
-): Promise<void> {
-  await updateBalanceAmountInTransaction(tx, {
-    balanceId: authorization.sourceBalanceId,
-    amount: authorization.sourceBalanceAfter
-  });
 
-  await updateBalanceAmountInTransaction(tx, {
-    balanceId: authorization.destinationBalanceId,
-    amount: authorization.destinationBalanceAfter
-  });
-}

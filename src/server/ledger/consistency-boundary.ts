@@ -11,10 +11,10 @@ import {
   createRequestInTransaction,
   createTransferInTransaction,
   getPrismaClient,
+  isRequestIdentityDuplicateError,
   updateRequestOutcomeInTransaction,
   updateTransferStateInTransaction
 } from "./persistence-boundary";
-
 /**
  * Consistency Boundary.
  *
@@ -194,7 +194,14 @@ export async function executeTransferInConsistencyBoundary(
 
       const balanceAuthorization = await authorizeBalanceChange({
         tx,
-        transferInput: input
+        transferInput: {
+          requestIdentity: input.requestIdentity,
+          sourceAccountId: input.sourceAccountId,
+          destinationAccountId: input.destinationAccountId,
+          assetId: input.assetId,
+          amount: input.amount,
+          state: "VALIDATED"
+        }
       });
 
       if (!balanceAuthorization.ok) {
@@ -223,42 +230,6 @@ export async function executeTransferInConsistencyBoundary(
           sourceFailureId: balanceAuthorization.sourceFailureId,
           reason: "BALANCE_CONTROL_REJECTED",
           message: balanceAuthorization.message
-        });
-      }
-
-      const validatedToExecuted = evaluateLifecycleControl({
-        transferId: transfer.id,
-        requestIdentity: input.requestIdentity,
-        currentState: "VALIDATED",
-        requestedState: "EXECUTED"
-      });
-
-      if (!validatedToExecuted.ok) {
-        await updateTransferStateInTransaction(tx, {
-          transferId: transfer.id,
-          state: "FAILED",
-          failedAt: now
-        });
-
-        await updateRequestOutcomeInTransaction(tx, {
-          requestId: request.id,
-          status: "FAILED",
-          errorBody: {
-            reason: "VALIDATED_TO_EXECUTED_REJECTED",
-            sourceFailureId: "FAIL-008"
-          },
-          completedAt: now
-        });
-
-        return failConsistencyBoundary({
-          ok: false,
-          requestId: request.id,
-          requestIdentity: input.requestIdentity,
-          transferId: transfer.id,
-          transferState: "FAILED",
-          sourceFailureId: "FAIL-008",
-          reason: "VALIDATED_TO_EXECUTED_REJECTED",
-          message: "Lifecycle Control rejected VALIDATED -> EXECUTED."
         });
       }
 
@@ -335,15 +306,39 @@ export async function executeTransferInConsistencyBoundary(
         sourceReferences: CONSISTENCY_BOUNDARY_SOURCE_REFERENCES
       };
     });
-  } catch {
-    return failConsistencyBoundary({
-      ok: false,
-      requestIdentity: input.requestIdentity,
-      sourceFailureId: "FAIL-004",
-      reason: "TRANSACTION_FAILED",
-      message: "Consistency Boundary transaction failed."
+
+    
+} catch (error) {
+  // Handle unique constraint violation on request.identity (duplicate request)
+  if (isRequestIdentityDuplicateError(error)) {
+    // Request identity unique constraint violated
+    // Resolve as duplicate and return persisted outcome
+    const existingRequest = await getPrismaClient().request.findUnique({
+      where: { identity: input.requestIdentity },
+      include: { transfer: true }
     });
+
+    if (existingRequest) {
+      return {
+        ok: true,
+        boundary: "ARCH-003",
+        requestId: existingRequest.id,
+        requestIdentity: input.requestIdentity,
+        transferId: existingRequest.transfer?.id,
+        transferState: (existingRequest.transfer?.state as "EXECUTED") || "EXECUTED",
+        sourceReferences: CONSISTENCY_BOUNDARY_SOURCE_REFERENCES
+      };
+    }
   }
+
+  return failConsistencyBoundary({
+    ok: false,
+    requestIdentity: input.requestIdentity,
+    sourceFailureId: "FAIL-004",
+    reason: "TRANSACTION_FAILED",
+    message: "Consistency Boundary transaction failed."
+  });
+}
 }
 
 

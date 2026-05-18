@@ -9,9 +9,7 @@
  * Read Derivation Boundary.
  *
  * Source authority:
- * - L03__INVARIANTS__CORRECTNESS_RULES__LEDGER.md
  * - L06__ARCHITECTURE__CONTROL_FLOW__SYSTEM.md
- * - L08__API_CONTRACTS__EXTERNAL_BOUNDARY__SYSTEM.md
  *
  * Source references:
  * - ARCH-008
@@ -19,19 +17,13 @@
  * - INV-001
  * - INV-003
  * - API-005
- * - API-011
- * - TEST-001
- * - TEST-003
- * - TEST-011
  *
- * This file provides derived read state only.
+ * This file derives read-only state from persistence.
  * This file does not mutate state.
- * This file does not authorize Balance-Affecting Operations.
- * This file does not execute lifecycle transitions.
  * This file does not authorize Balance Changes.
  * This file does not create LedgerEntries.
  * This file does not open transactions.
- * This file does not import Prisma directly.
+ * This file is outside the Balance-Affecting Operation execution path.
  */
 
 export type ReadDerivationBoundary = "ARCH-008";

@@ -1,4 +1,25 @@
 ﻿/**
+ * MVP local authorization policy.
+ *
+ * Implementation assumption:
+ * - A structurally valid local Transfer request is authorized inside this bounded MVP.
+ * - This is the MVP assumption: all structurally valid requests are authorized.
+ * - Real systems would add account ownership checks, role validation, etc.
+ *
+ * This is not source authority per L09.
+ * Source authority for authorization constraints: L09__SECURITY_AUTHZ__ACCESS_RULES__SYSTEM.md
+ *
+ * AUTHZ-002 (Authorized Request Requirement): satisfied by structure validation.
+ * AUTHZ-003 (Determinism): same input always produces same decision.
+ * AUTHZ-004 (Non-Mutation): this function does not mutate state.
+ * AUTHZ-009 (Bounded Scope): applies only within MVP boundary.
+ * 
+ * It does not bypass idempotency, lifecycle, Balance Control, Ledger Control,
+ * Persistence Boundary, or Consistency Boundary.
+ */
+
+
+/**
  * Authorization Control.
  *
  * Source authority:

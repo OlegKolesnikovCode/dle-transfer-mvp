@@ -11,11 +11,11 @@ import {
  * - L06__ARCHITECTURE__CONTROL_FLOW__SYSTEM.md
  *
  * Source references:
+ * - ARCH-004
+ * - ARCH-009
  * - FSM-001 through FSM-010
  * - INV-008
  * - FAIL-008
- * - ARCH-004
- * - ARCH-009
  *
  * This file evaluates lifecycle transition intent.
  * This file does not persist lifecycle state.
