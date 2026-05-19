@@ -1,6 +1,24 @@
 {
   "name": "dle-transfer-mvp",
+  "version": "1.0.0",
   "private": true,
+  "description": "This is a constraint-driven ledger system engineered to prove correctness for Balance-Affecting Operations under concurrency, retry, and partial failure.",
+  "homepage": "https://github.com/OlegKolesnikovCode/dle-transfer-mvp#readme",
+  "bugs": {
+    "url": "https://github.com/OlegKolesnikovCode/dle-transfer-mvp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OlegKolesnikovCode/dle-transfer-mvp.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "directories": {
+    "doc": "doc",
+    "test": "tests"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "prisma generate && next build",
@@ -12,9 +30,6 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:push": "prisma db push",
     "prisma:seed": "prisma db seed"
-  },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@prisma/adapter-neon": "^7.8.0",
@@ -40,5 +55,8 @@
     "ts-jest": "^29.4.9",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }

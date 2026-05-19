@@ -154,44 +154,4 @@ export async function persistAuthorizedLedgerEntries(
   );
 }
 
-export function authorizeLedgerEntryCreation(
-  input: LedgerControlInput
-): LedgerControlResult {
-  if (input.transferId.trim().length === 0) {
-    return rejectLedgerControl(
-      "TRANSFER_ID_MISSING",
-      "LedgerEntry creation requires an associated Transfer identity.",
-      "FAIL-010"
-    );
-  }
 
-  const plan = createTransferLedgerEntryPlan(input.transfer);
-
-  if (!isCompleteTransferLedgerEntryPlan(plan)) {
-    return rejectLedgerControl(
-      "LEDGER_ENTRY_PLAN_INCOMPLETE",
-      "Transfer LedgerEntry plan is incomplete.",
-      "FAIL-010"
-    );
-  }
-
-  // Validate that transfer is in VALIDATED state (per FSM-005)
-  // This ensures ledger entries are created only during VALIDATED -> EXECUTED transition
-  if (input.transfer.state !== "VALIDATED") {
-    return rejectLedgerControl(
-      "LEDGER_ENTRY_PLAN_INCOMPLETE",
-      "Transfer must be in VALIDATED state before LedgerEntry creation.",
-      "FAIL-010"
-    );
-  }
-
-  return {
-    ok: true,
-    boundary: "ARCH-006",
-    transferId: input.transferId,
-    requestIdentity: input.transfer.requestIdentity,
-    plan,
-    createdAt: input.createdAt,
-    sourceReferences: LEDGER_CONTROL_SOURCE_REFERENCES
-  };
-}

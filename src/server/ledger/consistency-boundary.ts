@@ -318,14 +318,14 @@ export async function executeTransferInConsistencyBoundary(
       include: { transfer: true }
     });
 
-    if (existingRequest) {
+    if (existingRequest?.transfer) {
       return {
         ok: true,
         boundary: "ARCH-003",
         requestId: existingRequest.id,
         requestIdentity: input.requestIdentity,
-        transferId: existingRequest.transfer?.id,
-        transferState: (existingRequest.transfer?.state as "EXECUTED") || "EXECUTED",
+        transferId: existingRequest.transfer.id,
+        transferState: "EXECUTED",
         sourceReferences: CONSISTENCY_BOUNDARY_SOURCE_REFERENCES
       };
     }

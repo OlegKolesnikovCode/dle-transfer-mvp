@@ -1,7 +1,8 @@
 ﻿import Decimal from "decimal.js";
 import {
   findBalanceByAccountAndAssetInTransaction,
-  type PersistenceTransaction
+  type PersistenceTransaction,
+  updateBalanceAmountInTransaction
 } from "./persistence-boundary";
 
 import type { ValidatedTransfer } from "../../domain/operations/transfer/transfer.types";
@@ -183,6 +184,21 @@ export async function authorizeBalanceChange(
     destinationBalanceAfter: decimalToAtomicString(destinationAfter),
     sourceReferences: BALANCE_CONTROL_SOURCE_REFERENCES
   };
+}
+
+export async function persistAuthorizedBalanceChange(
+  tx: PersistenceTransaction,
+  authorization: BalanceControlAuthorized
+): Promise<void> {
+  await updateBalanceAmountInTransaction(tx, {
+    balanceId: authorization.sourceBalanceId,
+    amount: authorization.sourceBalanceAfter
+  });
+
+  await updateBalanceAmountInTransaction(tx, {
+    balanceId: authorization.destinationBalanceId,
+    amount: authorization.destinationBalanceAfter
+  });
 }
 
 
