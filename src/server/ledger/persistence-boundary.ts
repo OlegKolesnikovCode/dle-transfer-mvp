@@ -244,6 +244,46 @@ export async function updateBalanceAmountInTransaction(
   });
 }
 
+/**
+ * Conditional atomic updates to balances to avoid read-modify-write races.
+ * - `decrementBalanceAmountInTransaction`: decrements the balance by `amount` only
+ *   if the existing `amount >= amount`. Returns number of affected rows (0 or 1).
+ * - `incrementBalanceAmountInTransaction`: increments the balance by `amount`.
+ *
+ * These use raw SQL inside the transaction to perform atomic arithmetic.
+ */
+export class ConditionalUpdateFailedError extends Error {}
+
+export async function decrementBalanceAmountInTransaction(
+  tx: PersistenceTransaction,
+  balanceId: string,
+  amount: string
+) {
+  // Use a parameterized raw update to atomically decrement only when sufficient funds exist.
+  // Returns the number of rows affected.
+  const result = await tx.$executeRaw`
+    UPDATE "balances"
+    SET "amount" = "amount" - ${amount}
+    WHERE "id" = ${balanceId} AND "amount" >= ${amount}
+  `;
+
+  return Number(result);
+}
+
+export async function incrementBalanceAmountInTransaction(
+  tx: PersistenceTransaction,
+  balanceId: string,
+  amount: string
+) {
+  const result = await tx.$executeRaw`
+    UPDATE "balances"
+    SET "amount" = "amount" + ${amount}
+    WHERE "id" = ${balanceId}
+  `;
+
+  return Number(result);
+}
+
 export async function createLedgerEntriesInTransaction(
   tx: PersistenceTransaction,
   entries: readonly CreateLedgerEntryInput[]

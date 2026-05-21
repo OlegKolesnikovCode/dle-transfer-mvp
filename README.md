@@ -306,7 +306,7 @@ A test is not proof unless it includes:
 - **ORM:** Prisma
 - **Validation:** Zod
 - **Testing:** Jest
-- **Local DB:** Docker Compose
+- **Local DB:** PostgreSQL (Docker optional)
 
 # ⚙️ Run Locally
 
@@ -315,22 +315,36 @@ A test is not proof unless it includes:
    npm install
    ```
 2. **Start local PostgreSQL**
+   - If you have a local Postgres installation, start it normally.
+   - If you want to use Docker, run:
+     ```bash
+     docker compose up -d
+     ```
+3. **Create a test env file**
    ```bash
-   docker compose up -d
+   cp .env.example .env.test
    ```
-3. **Generate Prisma client**
+   Then update `.env.test` with your local Postgres connection string.
+4. **Generate Prisma client**
    ```bash
    npx prisma generate
    ```
-4. **Run database migration**
+5. **Run database migration**
    ```bash
    npx prisma migrate dev
    ```
-5. **Seed database**
+6. **Seed database**
    ```bash
    npx prisma db seed
    ```
-6. **Start development server**
+7. **Start development server**
+   ```bash
+   npm run dev
+   ```
+
+   npx prisma db seed
+   ```
+7. **Start development server**
    ```bash
    npm run dev
    ```

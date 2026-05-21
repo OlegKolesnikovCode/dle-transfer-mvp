@@ -262,6 +262,16 @@ export function validateTransferRequestInput(
         "FAIL-005"
       )
     );
+  } else if ((input.amount as string).length > 38) {
+    // Database stores Decimal(38,0). Reject amounts exceeding precision.
+    issues.push(
+      createIssue(
+        "INVALID_AMOUNT_FORMAT",
+        "Transfer amount exceeds maximum precision allowed by storage (38 digits).",
+        ["ENT-004", "TERM-008", "INV-005", "FAIL-005"],
+        "FAIL-005"
+      )
+    );
   } else if (!isPositiveAtomicUnitDecimalString(input.amount)) {
     issues.push(
       createIssue(

@@ -15,6 +15,7 @@ import {
   updateRequestOutcomeInTransaction,
   updateTransferStateInTransaction
 } from "./persistence-boundary";
+import { ConditionalUpdateFailedError } from "./persistence-boundary";
 /**
  * Consistency Boundary.
  *
@@ -329,6 +330,16 @@ export async function executeTransferInConsistencyBoundary(
         sourceReferences: CONSISTENCY_BOUNDARY_SOURCE_REFERENCES
       };
     }
+  }
+  // Map conditional update failure (concurrent balance race) to a Balance Control rejection.
+  if (error instanceof ConditionalUpdateFailedError) {
+    return failConsistencyBoundary({
+      ok: false,
+      requestIdentity: input.requestIdentity,
+      sourceFailureId: "FAIL-005",
+      reason: "BALANCE_CONTROL_REJECTED",
+      message: error.message
+    });
   }
 
   return failConsistencyBoundary({

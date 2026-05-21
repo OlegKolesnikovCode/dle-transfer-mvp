@@ -2,7 +2,10 @@
 import {
   findBalanceByAccountAndAssetInTransaction,
   type PersistenceTransaction,
-  updateBalanceAmountInTransaction
+  updateBalanceAmountInTransaction,
+  decrementBalanceAmountInTransaction,
+  incrementBalanceAmountInTransaction,
+  ConditionalUpdateFailedError
 } from "./persistence-boundary";
 
 import type { ValidatedTransfer } from "../../domain/operations/transfer/transfer.types";
@@ -190,15 +193,32 @@ export async function persistAuthorizedBalanceChange(
   tx: PersistenceTransaction,
   authorization: BalanceControlAuthorized
 ): Promise<void> {
-  await updateBalanceAmountInTransaction(tx, {
-    balanceId: authorization.sourceBalanceId,
-    amount: authorization.sourceBalanceAfter
-  });
+  // Atomically decrement source balance only when sufficient funds remain.
+  const decAffected = await decrementBalanceAmountInTransaction(
+    tx,
+    authorization.sourceBalanceId,
+    authorization.amount
+  );
 
-  await updateBalanceAmountInTransaction(tx, {
-    balanceId: authorization.destinationBalanceId,
-    amount: authorization.destinationBalanceAfter
-  });
+  if (decAffected !== 1) {
+    // Signal a conditional-update failure so the consistency boundary can map it.
+    throw new ConditionalUpdateFailedError(
+      "Source balance conditional decrement failed"
+    );
+  }
+
+  const incAffected = await incrementBalanceAmountInTransaction(
+    tx,
+    authorization.destinationBalanceId,
+    authorization.amount
+  );
+
+  if (incAffected !== 1) {
+    // This is unexpected: attempt to undo the decrement will be handled by transaction rollback.
+    throw new ConditionalUpdateFailedError(
+      "Destination balance increment failed"
+    );
+  }
 }
 
 
