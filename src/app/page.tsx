@@ -87,8 +87,16 @@ const INITIAL_STEPS: VerificationStep[] = [
     observed: "Not run."
   },
   {
+    id: "duplicate-failed-request",
+    title: "5. Duplicate failed Request preserves failed outcome",
+    sourceRefs: ["INV-007", "FAIL-007", "ARCH-002"],
+    status: "idle",
+    expected: "Retrying the same failed requestIdentity returns duplicate FAILED outcome and does not mutate balances.",
+    observed: "Not run."
+  },
+  {
     id: "invalid-rejection",
-    title: "5. Invalid Transfer is rejected without mutation",
+    title: "6. Invalid Transfer is rejected without mutation",
     sourceRefs: ["INV-005", "FAIL-005", "ARCH-005"],
     status: "idle",
     expected: "Insufficient funds returns FAIL-005 or FAILED outcome and balances remain unchanged.",
@@ -233,6 +241,25 @@ function isDuplicateReplay(apiResult: ApiResult, expectedTransferId: string): bo
     apiResult.httpStatus < 300 &&
     body?.status === "success" &&
     result?.duplicate === true &&
+    typeof body?.transferId === "string" &&
+    body.transferId === expectedTransferId
+  );
+}
+
+function isFailedDuplicateReplay(
+  apiResult: ApiResult,
+  expectedTransferId: string
+): boolean {
+  const body = asRecord(apiResult.body);
+  const result = asRecord(body?.result);
+
+  return (
+    apiResult.httpStatus >= 200 &&
+    apiResult.httpStatus < 300 &&
+    body?.status === "success" &&
+    result?.duplicate === true &&
+    result?.requestStatus === "FAILED" &&
+    typeof result?.persistedOutcome !== "undefined" &&
     typeof body?.transferId === "string" &&
     body.transferId === expectedTransferId
   );
@@ -652,6 +679,8 @@ export default function Home() {
         })
       });
 
+      const invalidRequestId = getRequestId(invalidResponse);
+
       const sourceAfterInvalid = await getAccountBalance(
         form.sourceAccountId,
         form.assetId
@@ -661,6 +690,8 @@ export default function Home() {
         form.destinationAccountId,
         form.assetId
       );
+
+      const invalidTransferId = getTransferId(invalidResponse);
 
       setRawOutput((current) => ({
         ...current,
@@ -691,6 +722,7 @@ export default function Home() {
         eventType: "response.produced",
         outcome: invalidPass ? "rejected" : "failed",
         requestIdentity: invalidRequestIdentity,
+        requestId: invalidRequestId,
         failureClass: "FAIL-005",
         sourceRefs: ["API-004", "API-012", "FAIL-005"],
         notes: "External response represented rejected Request outcome without exposing internal mutation authority."
@@ -702,6 +734,83 @@ export default function Home() {
         invalidPass
           ? `Rejected insufficient funds with no Balance mutation. Tried amount=${tooLargeAmount}.`
           : "Invalid Transfer did not produce expected FAIL-005-style rejection or Balance changed."
+      );
+
+      const duplicateFailedResponse = await fetchJson("/api/transfers", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          ...transferBody,
+          requestIdentity: invalidRequestIdentity,
+          amount: tooLargeAmount
+        })
+      });
+
+      const sourceAfterDuplicateFailed = await getAccountBalance(
+        form.sourceAccountId,
+        form.assetId
+      );
+
+      const destinationAfterDuplicateFailed = await getAccountBalance(
+        form.destinationAccountId,
+        form.assetId
+      );
+
+      let failedLedgerEntries: unknown = undefined;
+      let failedLedgerCount = 0;
+
+      if (invalidTransferId) {
+        const failedLedgerResponse = await fetchJson(
+          `/api/transfers/${invalidTransferId}/ledger-entries`
+        );
+
+        failedLedgerEntries = failedLedgerResponse.body;
+
+        const failedLedgerBody = asRecord(failedLedgerResponse.body);
+        const failedLedgerResult = asRecord(failedLedgerBody?.result);
+
+        if (Array.isArray(failedLedgerResult?.ledgerEntries)) {
+          failedLedgerCount = failedLedgerResult.ledgerEntries.length;
+        }
+      }
+
+      setRawOutput((current) => ({
+        ...current,
+        duplicateFailedResponse: duplicateFailedResponse.body,
+        sourceBalanceAfterDuplicateFailed: sourceAfterDuplicateFailed.raw,
+        destinationBalanceAfterDuplicateFailed: destinationAfterDuplicateFailed.raw,
+        failedLedgerEntries
+      }));
+
+      const duplicateFailedPass =
+        invalidTransferId !== null &&
+        isFailedDuplicateReplay(duplicateFailedResponse, invalidTransferId) &&
+        sourceAfterDuplicateFailed.amount === sourceAfterInvalid.amount &&
+        destinationAfterDuplicateFailed.amount === destinationAfterInvalid.amount &&
+        (invalidTransferId ? failedLedgerCount === 0 : true);
+
+      addTrace({
+        boundary: "ARCH-002",
+        eventType: "request.duplicate_resolved",
+        outcome: duplicateFailedPass ? "resolved_duplicate" : "failed",
+        requestIdentity: invalidRequestIdentity,
+        requestId: getRequestId(duplicateFailedResponse) || invalidRequestId,
+        transferId: invalidTransferId || undefined,
+        failureClass: duplicateFailedPass ? undefined : "FAIL-007",
+        sourceRefs: ["ARCH-002", "INV-007", "FAIL-007", "TEST-007"],
+        notes: duplicateFailedPass
+          ? "Duplicate failed Request replayed persisted failed outcome and preserved balances."
+          : "Duplicate failed Request did not preserve persisted failure semantics."
+      });
+
+      updateStep(
+        "duplicate-failed-request",
+        duplicateFailedPass ? "pass" : "fail",
+        duplicateFailedPass
+          ? "Duplicate failed Request returned preserved failed outcome with no Balance mutation."
+          : "Duplicate failed Request did not preserve persisted failed outcome or mutated balances."
       );
 
       setActiveTab("trace");

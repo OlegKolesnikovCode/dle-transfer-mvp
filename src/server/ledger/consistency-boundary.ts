@@ -69,6 +69,19 @@ export type ConsistencyBoundaryCompleted = Readonly<{
   sourceReferences: readonly string[];
 }>;
 
+export type ConsistencyBoundaryDuplicateResolved = Readonly<{
+  ok: true;
+  duplicate: true;
+  boundary: "ARCH-003";
+  requestId: string;
+  requestIdentity: string;
+  requestStatus: string;
+  transferId?: string;
+  transferState?: "REQUESTED" | "VALIDATED" | "EXECUTED" | "FAILED";
+  persistedOutcome: unknown;
+  sourceReferences: readonly string[];
+}>;
+
 export type ConsistencyBoundaryFailed = Readonly<{
   ok: false;
   boundary: "ARCH-003";
@@ -96,6 +109,7 @@ export type ConsistencyBoundaryFailed = Readonly<{
 
 export type ConsistencyBoundaryResult =
   | ConsistencyBoundaryCompleted
+  | ConsistencyBoundaryDuplicateResolved
   | ConsistencyBoundaryFailed;
 
 const CONSISTENCY_BOUNDARY_SOURCE_REFERENCES = [
@@ -319,14 +333,18 @@ export async function executeTransferInConsistencyBoundary(
       include: { transfer: true }
     });
 
-    if (existingRequest?.transfer) {
+    if (existingRequest) {
       return {
         ok: true,
+        duplicate: true,
         boundary: "ARCH-003",
         requestId: existingRequest.id,
         requestIdentity: input.requestIdentity,
-        transferId: existingRequest.transfer.id,
-        transferState: "EXECUTED",
+        requestStatus: existingRequest.status,
+        transferId: existingRequest.transfer?.id,
+        transferState: existingRequest.transfer?.state,
+        persistedOutcome:
+          existingRequest.responseBody ?? existingRequest.errorBody,
         sourceReferences: CONSISTENCY_BOUNDARY_SOURCE_REFERENCES
       };
     }

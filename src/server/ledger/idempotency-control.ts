@@ -1,5 +1,6 @@
 ﻿import {
   executeTransferInConsistencyBoundary,
+  type ConsistencyBoundaryCompleted,
   type ConsistencyBoundaryResult,
   type ConsistencyTransferInput
 } from "./consistency-boundary";
@@ -51,7 +52,7 @@ export type IdempotencyNewExecution = Readonly<{
   duplicate: false;
   boundary: "ARCH-002";
   requestIdentity: string;
-  execution: Extract<ConsistencyBoundaryResult, { ok: true }>;
+  execution: ConsistencyBoundaryCompleted;
   sourceReferences: readonly string[];
 }>;
 
@@ -116,12 +117,26 @@ export async function resolveIdempotentTransferRequest(
     };
   }
 
+  if ("duplicate" in execution && execution.duplicate) {
+    return {
+      ok: true,
+      duplicate: true,
+      boundary: "ARCH-002",
+      requestId: execution.requestId,
+      requestIdentity: execution.requestIdentity,
+      requestStatus: execution.requestStatus,
+      transferId: execution.transferId,
+      persistedOutcome: execution.persistedOutcome,
+      sourceReferences: IDEMPOTENCY_CONTROL_SOURCE_REFERENCES
+    };
+  }
+
   return {
     ok: true,
     duplicate: false,
     boundary: "ARCH-002",
     requestIdentity: input.requestIdentity,
-    execution,
+    execution: execution as ConsistencyBoundaryCompleted,
     sourceReferences: IDEMPOTENCY_CONTROL_SOURCE_REFERENCES
   };
 }

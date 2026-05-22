@@ -1,3 +1,6 @@
+import { getPrismaClient, disconnectPrismaClient } from "../src/server/ledger/persistence-boundary";
+import { resolveIdempotentTransferRequest } from "../src/server/ledger/idempotency-control";
+
 /**
  * TEST-007 — Idempotency Verification
  *
@@ -222,5 +225,148 @@ describe("TEST-007 — Idempotency Verification", () => {
       expect(result.sourceFailureId).toBe("FAIL-007");
       expect(result.reason).toBe("REQUEST_IDENTITY_MISMATCH");
     }
+  });
+});
+
+describe("TEST-007 — Idempotency DB-backed duplicate request collisions", () => {
+  const prisma = getPrismaClient();
+  let assetId: string;
+  let sourceAccountId: string;
+  let destinationAccountId: string;
+
+  beforeAll(async () => {
+    await prisma.ledgerEntry.deleteMany();
+    await prisma.transfer.deleteMany();
+    await prisma.request.deleteMany();
+    await prisma.balance.deleteMany();
+    await prisma.account.deleteMany();
+    await prisma.asset.deleteMany();
+
+    await prisma.asset.create({ data: { code: "TEST", name: "Test Asset" } });
+    await prisma.account.createMany({ data: [{}, {}] });
+
+    const accounts = await prisma.account.findMany({ orderBy: { createdAt: "asc" } });
+    const asset = await prisma.asset.findFirst();
+
+    sourceAccountId = accounts[0].id;
+    destinationAccountId = accounts[1].id;
+    assetId = asset!.id;
+
+    await prisma.balance.create({
+      data: { accountId: sourceAccountId, assetId, amount: "100" }
+    });
+    await prisma.balance.create({
+      data: { accountId: destinationAccountId, assetId, amount: "0" }
+    });
+  });
+
+  beforeEach(async () => {
+    await prisma.ledgerEntry.deleteMany();
+    await prisma.transfer.deleteMany();
+    await prisma.request.deleteMany();
+
+    await prisma.balance.update({
+      where: { accountId_assetId: { accountId: sourceAccountId, assetId } },
+      data: { amount: "100" }
+    });
+    await prisma.balance.update({
+      where: { accountId_assetId: { accountId: destinationAccountId, assetId } },
+      data: { amount: "0" }
+    });
+  });
+
+  afterAll(async () => {
+    await disconnectPrismaClient();
+  });
+
+  it("resolves a successful duplicate request collision using the persisted completed outcome", async () => {
+    const requestIdentity = `duplicate-success-${Date.now()}-${Math.random()}`;
+    const input = {
+      requestIdentity,
+      sourceAccountId,
+      destinationAccountId,
+      assetId,
+      amount: "60"
+    };
+
+    const [first, second] = await Promise.all([
+      resolveIdempotentTransferRequest(input),
+      resolveIdempotentTransferRequest(input)
+    ]);
+
+    const successResult = [first, second].find(
+      (result) => result.ok && result.duplicate === false
+    );
+    const duplicateResult = [first, second].find(
+      (result) => result.ok && result.duplicate === true
+    );
+
+    expect(successResult).toBeDefined();
+    expect(duplicateResult).toBeDefined();
+    expect(duplicateResult?.requestStatus).toBe("COMPLETED");
+    expect(duplicateResult?.persistedOutcome).toBeDefined();
+    expect(duplicateResult?.transferId).toBeDefined();
+    expect(duplicateResult?.transferId).toEqual(
+      (successResult as any).execution.transferId
+    );
+
+    expect(
+      await prisma.request.count({ where: { identity: requestIdentity } })
+    ).toBe(1);
+    expect(
+      await prisma.transfer.count({ where: { sourceAccountId, state: "EXECUTED" } })
+    ).toBe(1);
+
+    const sourceBalance = await prisma.balance.findUnique({
+      where: { accountId_assetId: { accountId: sourceAccountId, assetId } }
+    });
+    expect(sourceBalance?.amount.toString()).toBe("40");
+
+    const debitEntries = await prisma.ledgerEntry.count({
+      where: { accountId: sourceAccountId, direction: "DEBIT" }
+    });
+    expect(debitEntries).toBe(1);
+  });
+
+  it("resolves a failed duplicate request collision using the persisted failed outcome", async () => {
+    const requestIdentity = `duplicate-fail-${Date.now()}-${Math.random()}`;
+    const input = {
+      requestIdentity,
+      sourceAccountId,
+      destinationAccountId,
+      assetId,
+      amount: "200"
+    };
+
+    const [first, second] = await Promise.all([
+      resolveIdempotentTransferRequest(input),
+      resolveIdempotentTransferRequest(input)
+    ]);
+
+    const failedResult = [first, second].find((result) => result.ok === false);
+    const duplicateResult = [first, second].find(
+      (result) => result.ok === true && result.duplicate === true
+    );
+
+    expect(failedResult).toBeDefined();
+    expect(duplicateResult).toBeDefined();
+    expect(duplicateResult?.requestStatus).toBe("FAILED");
+    expect(duplicateResult?.persistedOutcome).toBeDefined();
+
+    expect(
+      await prisma.request.count({ where: { identity: requestIdentity } })
+    ).toBe(1);
+    expect(
+      await prisma.transfer.count({ where: { sourceAccountId, state: "EXECUTED" } })
+    ).toBe(0);
+
+    const sourceBalance = await prisma.balance.findUnique({
+      where: { accountId_assetId: { accountId: sourceAccountId, assetId } }
+    });
+    expect(sourceBalance?.amount.toString()).toBe("100");
+
+    expect(
+      await prisma.ledgerEntry.count({ where: { accountId: sourceAccountId } })
+    ).toBe(0);
   });
 });
